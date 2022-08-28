@@ -1,58 +1,123 @@
-import sqlalchemy
-from sqlalchemy import Table, Column, Integer, String, MetaData
-from sqlalchemy import create_engine
+import sqlite3
+from sqlite3 import Error
+import csv
 
 
-engine = create_engine('sqlite:///stationbase.db', echo=True)
+def create_connection(db_file):
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file)
+        return conn
+    except Error as e:
+        print(e)
 
-meta = MetaData()
+    return conn
 
-measures = Table(
-    'measures', meta,
-    Column('station', String),
-    Column('date', String),
-    Column('precip', String),
-    Column('tobs', Integer)
-)
+def execute_sql(conn, sql):
+    try:
+        c = conn.cursor()
+        c.execute(sql)
+    except Error as e:
+        print(e)
 
-stations = Table(
-    'stations', meta,
-    Column('station', String),
-    Column('latitude', String),
-    Column('longitude', String),
-    Column('elevation', String),
-    Column('name', String),
-    Column('country', String),
-    Column('state', String)
-)
+def get_clean_stations():
+    clean_stations = open("clean_stations.csv")
+    rows = csv.reader(clean_stations)
+    cur = conn.cursor()
+    cur.executemany("INSERT OR IGNORE INTO stations VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    
+def get_clean_measure():
+    clean_measure = open("clean_measure.csv")
+    rows = csv.reader(clean_measure)
+    cur = conn.cursor()
+    cur.executemany("INSERT OR IGNORE INTO measure VALUES (?, ?, ?, ?)", rows)
+    conn.commit()
 
-meta.create_all(engine)
+def select_all(conn, table):
+    cur = conn.cursor()
+    cur.execute(f"SELECT * FROM {table}")
+    rows = cur.fetchall()
 
-ins = measures.insert()
-conn = engine.connect()
-result = conn.execute(ins)
-ins.compile().params
-conn.execute(ins, [
-    {'station': 'USC00519397', 'date': '2010-01-01', 'precip': '0.08', 'tobs': '65'},
-    {'station': 'USC00519397', 'date': '2010-01-02', 'precip': '0.0', 'tobs': '63'},
-    {'station': 'USC00519397', 'date': '2010-01-03', 'precip': '0.0', 'tobs': '74'},
-    {'station': 'USC00519397', 'date': '2010-01-04', 'precip': '0.0', 'tobs': '76'},
-    {'station': 'USC00519397', 'date': '2010-01-06', 'precip': '0.0', 'tobs': '73'}
-])
+    return rows
 
-ins2 = stations.insert()
-result2 = conn.execute(ins2)
-ins2.compile().params
-conn.execute(ins2, [
-    {'station': 'USC00519397', 'latitude': '21.2716', 'longitude': '-157.8168', 'elevation': '3.0', 'name': 'WAIKIKI 717.2', 'country': 'US','state': 'HI'},
-    {'station': 'USC00513117', 'latitude': '21.4234', 'longitude': '-157.8015', 'elevation': '14.6', 'name': 'KANEOHE 838.1', 'country': 'US','state': 'HI'},
-    {'station': 'USC00514830', 'latitude': '21.5213', 'longitude': '-157.8374', 'elevation': '7.0', 'name': 'KUALOA RANCH HEADQUARTERS 886.9', 'country': 'US','state': 'HI'},
-    {'station': 'USC00517948', 'latitude': '21.3934', 'longitude': '-157.9751', 'elevation': '11.9', 'name': 'PEARL CITY', 'country': 'US','state': 'HI'},
-    {'station': 'USC00518838', 'latitude': '21.4992', 'longitude': '-158.0111', 'elevation': '306.6', 'name': 'UPPER WAHIAWA 874.3', 'country': 'US','state': 'HI'}
-])
+def select_where(conn, table, **query):
+    cur = conn.cursor()
+    qs = []
+    values = ()
+    for k, v in query.items():
+        qs.append(f"{k}=?")
+        values += (v,)
+    q = " AND ".join(qs)
+    cur.execute(f"SELECT * FROM {table} WHERE {q}", values)
+    rows = cur.fetchall()
+    return rows
 
-result = conn.execute(measures.select().where(measures.c.tobs > 70))
-for row in result:
-    print(row)
+def update(conn, table, id, **kwargs):
+    parameters = [f'{k} = ?' for k in kwargs]
+    parameters = ', '.join(parameters)
+    values = tuple(v for v in kwargs.values())
+    values += (id, )
+
+    sql = f''' UPDATE {table}
+            SET {parameters}
+            WHERE id = ?'''
+
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, values)
+        conn.commit()
+        print('OK')
+    except sqlite3.OperationalError as e:
+        print(e)
+
+def delete_all(conn, table):
+    sql = f'DELETE FROM {table}'
+    cur = conn.cursor()
+    cur.execute(sql)
+    conn.commit()
+    print('Delete')
 
 
+if __name__ == "__main__":
+
+    db_file = "stationbase.db"   
+    conn = create_connection(db_file)
+
+    create_stations_sql = """
+    -- stations table
+    CREATE TABLE IF NOT EXISTS stations (
+        station text PRIMARY KEY,
+        latitude float,
+        longitude float,
+        elevation float,
+        name text,
+        country text,
+        state text
+    );
+    """
+
+    create_measure_sql = """
+    -- measure table
+    CREATE TABLE IF NOT EXISTS measure (
+        station_name text,
+        date text,
+        precip float,
+        tobs integer,
+        FOREIGN KEY (station_name) REFERENCES stations (station)
+    );
+    """
+
+    if conn is not None:
+        execute_sql(conn, create_stations_sql)
+        execute_sql(conn, create_measure_sql)
+    
+        get_clean_stations()
+        get_clean_measure()
+
+        print(conn.execute('SELECT station FROM stations LIMIT 5').fetchall())
+        print(conn.execute('SELECT * FROM stations').fetchall())
+
+
+        delete_all(conn, 'stations')
+        delete_all(conn, 'measure')
